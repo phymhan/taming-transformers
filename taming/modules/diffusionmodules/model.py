@@ -4,6 +4,8 @@ import torch
 import torch.nn as nn
 import numpy as np
 
+import pdb
+st = pdb.set_trace
 
 def get_timestep_embedding(timesteps, embedding_dim):
     """

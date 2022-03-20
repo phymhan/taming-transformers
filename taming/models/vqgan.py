@@ -7,8 +7,9 @@ from main import instantiate_from_config
 from taming.modules.diffusionmodules.model import Encoder, Decoder
 from taming.modules.vqvae.quantize import VectorQuantizer2 as VectorQuantizer
 from taming.modules.vqvae.quantize import GumbelQuantize
-from taming.modules.vqvae.quantize import EMAVectorQuantizer
-
+import os
+import pdb
+st = pdb.set_trace
 class VQModel(pl.LightningModule):
     def __init__(self,
                  ddconfig,
@@ -40,6 +41,7 @@ class VQModel(pl.LightningModule):
             self.register_buffer("colorize", torch.randn(3, colorize_nlabels, 1, 1))
         if monitor is not None:
             self.monitor = monitor
+        self.current_step = 0
 
     def init_from_ckpt(self, path, ignore_keys=list()):
         sd = torch.load(path, map_location="cpu")["state_dict"]
@@ -99,6 +101,12 @@ class VQModel(pl.LightningModule):
                                             last_layer=self.get_last_layer(), split="train")
             self.log("train/discloss", discloss, prog_bar=True, logger=True, on_step=True, on_epoch=True)
             self.log_dict(log_dict_disc, prog_bar=False, logger=True, on_step=True, on_epoch=True)
+
+            self.current_step += 1
+            if self.current_step % 1000 == 0:
+                ckpt = os.path.join(self.trainer.logdir, "checkpoints", f"{self.current_step:04d}.ckpt")
+                self.trainer.save_checkpoint(ckpt)
+
             return discloss
 
     def validation_step(self, batch, batch_idx):
@@ -117,6 +125,10 @@ class VQModel(pl.LightningModule):
         self.log_dict(log_dict_ae)
         self.log_dict(log_dict_disc)
         return self.log_dict
+    
+    def on_validation_end(self, **kwargs):
+        ckpt = os.path.join(self.trainer.logdir, "checkpoints", "latest.ckpt")
+        self.trainer.save_checkpoint(ckpt)
 
     def configure_optimizers(self):
         lr = self.learning_rate
@@ -298,6 +310,7 @@ class GumbelVQ(VQModel):
 
         if ckpt_path is not None:
             self.init_from_ckpt(ckpt_path, ignore_keys=ignore_keys)
+        self.current_step = 0
 
     def temperature_scheduling(self):
         self.quantize.temperature = self.temperature_scheduler(self.global_step)
@@ -329,11 +342,16 @@ class GumbelVQ(VQModel):
             discloss, log_dict_disc = self.loss(qloss, x, xrec, optimizer_idx, self.global_step,
                                             last_layer=self.get_last_layer(), split="train")
             self.log_dict(log_dict_disc, prog_bar=False, logger=True, on_step=True, on_epoch=True)
+            self.current_step += 1
+            if self.current_step % 10000 == 0:
+                ckpt = os.path.join(self.trainer.logdir, "checkpoints", f"{self.current_step:04d}.ckpt")
+                self.trainer.save_checkpoint(ckpt)
             return discloss
 
     def validation_step(self, batch, batch_idx):
         x = self.get_input(batch, self.image_key)
-        xrec, qloss = self(x, return_pred_indices=True)
+        # xrec, qloss = self(x, return_pred_indices=True)
+        xrec, qloss = self(x)
         aeloss, log_dict_ae = self.loss(qloss, x, xrec, 0, self.global_step,
                                         last_layer=self.get_last_layer(), split="val")
 
@@ -347,6 +365,10 @@ class GumbelVQ(VQModel):
         self.log_dict(log_dict_ae)
         self.log_dict(log_dict_disc)
         return self.log_dict
+    
+    def on_validation_end(self, **kwargs):
+        ckpt = os.path.join(self.trainer.logdir, "checkpoints", "latest.ckpt")
+        self.trainer.save_checkpoint(ckpt)
 
     def log_images(self, batch, **kwargs):
         log = dict()
@@ -361,44 +383,3 @@ class GumbelVQ(VQModel):
         log["inputs"] = x
         log["reconstructions"] = x_rec
         return log
-
-
-class EMAVQ(VQModel):
-    def __init__(self,
-                 ddconfig,
-                 lossconfig,
-                 n_embed,
-                 embed_dim,
-                 ckpt_path=None,
-                 ignore_keys=[],
-                 image_key="image",
-                 colorize_nlabels=None,
-                 monitor=None,
-                 remap=None,
-                 sane_index_shape=False,  # tell vector quantizer to return indices as bhw
-                 ):
-        super().__init__(ddconfig,
-                         lossconfig,
-                         n_embed,
-                         embed_dim,
-                         ckpt_path=None,
-                         ignore_keys=ignore_keys,
-                         image_key=image_key,
-                         colorize_nlabels=colorize_nlabels,
-                         monitor=monitor,
-                         )
-        self.quantize = EMAVectorQuantizer(n_embed=n_embed,
-                                           embedding_dim=embed_dim,
-                                           beta=0.25,
-                                           remap=remap)
-    def configure_optimizers(self):
-        lr = self.learning_rate
-        #Remove self.quantize from parameter list since it is updated via EMA
-        opt_ae = torch.optim.Adam(list(self.encoder.parameters())+
-                                  list(self.decoder.parameters())+
-                                  list(self.quant_conv.parameters())+
-                                  list(self.post_quant_conv.parameters()),
-                                  lr=lr, betas=(0.5, 0.9))
-        opt_disc = torch.optim.Adam(self.loss.discriminator.parameters(),
-                                    lr=lr, betas=(0.5, 0.9))
-        return [opt_ae, opt_disc], []                                           

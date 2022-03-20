@@ -10,7 +10,8 @@ from torch.utils.data import Dataset
 from taming.data.base import ImagePaths
 from taming.util import download, retrieve
 import taming.data.utils as bdu
-
+import pdb
+st = pdb.set_trace
 
 def give_synsets_from_indices(indices, path_to_yaml="data/imagenet_idx_to_synset.yaml"):
     synsets = []

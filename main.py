@@ -10,9 +10,8 @@ from pytorch_lightning import seed_everything
 from pytorch_lightning.trainer import Trainer
 from pytorch_lightning.callbacks import ModelCheckpoint, Callback, LearningRateMonitor
 from pytorch_lightning.utilities.distributed import rank_zero_only
-
-from taming.data.utils import custom_collate
-
+import pdb
+st = pdb.set_trace
 
 def get_obj_from_str(string, reload=False):
     module, cls = string.rsplit(".", 1)
@@ -163,16 +162,16 @@ class DataModuleFromConfig(pl.LightningDataModule):
 
     def _train_dataloader(self):
         return DataLoader(self.datasets["train"], batch_size=self.batch_size,
-                          num_workers=self.num_workers, shuffle=True, collate_fn=custom_collate)
+                          num_workers=self.num_workers, shuffle=True)
 
     def _val_dataloader(self):
         return DataLoader(self.datasets["validation"],
                           batch_size=self.batch_size,
-                          num_workers=self.num_workers, collate_fn=custom_collate)
+                          num_workers=self.num_workers)
 
     def _test_dataloader(self):
         return DataLoader(self.datasets["test"], batch_size=self.batch_size,
-                          num_workers=self.num_workers, collate_fn=custom_collate)
+                          num_workers=self.num_workers)
 
 
 class SetupCallback(Callback):
@@ -228,6 +227,7 @@ class ImageLogger(Callback):
         if not increase_log_steps:
             self.log_steps = [self.batch_freq]
         self.clamp = clamp
+        self.validation_batch = None
 
     @rank_zero_only
     def _wandb(self, pl_module, images, batch_idx, split):
@@ -281,7 +281,7 @@ class ImageLogger(Callback):
                 pl_module.eval()
 
             with torch.no_grad():
-                images = pl_module.log_images(batch, split=split, pl_module=pl_module)
+                images = pl_module.log_images(batch, split=split)
 
             for k in images:
                 N = min(images[k].shape[0], self.max_images)
@@ -311,10 +311,12 @@ class ImageLogger(Callback):
 
     def on_train_batch_end(self, trainer, pl_module, outputs, batch, batch_idx, dataloader_idx):
         self.log_img(pl_module, batch, batch_idx, split="train")
+        if self.validation_batch is not None:
+            self.log_img(pl_module, self.validation_batch, batch_idx, split="val2")
 
     def on_validation_batch_end(self, trainer, pl_module, outputs, batch, batch_idx, dataloader_idx):
         self.log_img(pl_module, batch, batch_idx, split="val")
-
+        self.validation_batch = batch
 
 
 if __name__ == "__main__":
@@ -360,6 +362,7 @@ if __name__ == "__main__":
     #               key: value
 
     now = datetime.datetime.now().strftime("%Y-%m-%dT%H-%M-%S")
+    nowname = ''
 
     # add cwd for convenience and to make classes in this file available when
     # running as `python main.py`
@@ -521,6 +524,7 @@ if __name__ == "__main__":
         trainer_kwargs["callbacks"] = [instantiate_from_config(callbacks_cfg[k]) for k in callbacks_cfg]
 
         trainer = Trainer.from_argparse_args(trainer_opt, **trainer_kwargs)
+        trainer.logdir = logdir
 
         # data
         data = instantiate_from_config(config.data)
